@@ -1,111 +1,81 @@
-# Connect Four game controller in SystemVerilog
+# Connect Four controller with formally proven game invariants
 
-A synthesizable, parameterized Connect Four controller: button debouncing and edge detection, gravity, turn-taking,
-win detection over every four-in-a-row window, draw detection, and a board lockout at the end of the game.
+[![CI](https://github.com/r800360/connect4-sv/actions/workflows/ci.yml/badge.svg)](https://github.com/r800360/connect4-sv/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-It is verified three ways:
-* a self-checking testbench against a behavioral model;
-* **unbounded formal proofs** (ABC PDR/IC3) of seven game invariants;
-* **mutation testing** that shows the proofs catch real bugs.
+A synthesizable, parameterized Connect Four controller in SystemVerilog. It handles:
+* button synchronization and edge detection;
+* gravity and turn-taking;
+* win detection over every window, draw detection, and a lockout once the game is over.
 
-The design started as a two-person schematic project in a university digital-design lab, co-designed with a course
-project partner. This repository is a clean re-implementation in SystemVerilog, written after an analysis of that
-first version. The analysis found reset, turn-keeping and clocking bugs, one wrong lookup-table entry, and a power-on
-race, which is why verification is the focus here.
+The focus is evidence that the game rules can never be broken: **seven invariants proven unbounded**, broken designs
+that the proofs must catch, a bounded check of the full board, and a self-checking testbench against an independent
+model.
 
-## Interface
-
-```systemverilog
-module connect4 #(ROWS = 6, COLS = 7, WIN = 4, SYNC = 2) (
-  input  logic                 clk,
-  input  logic                 rst,         // synchronous: empty board, red to move
-  input  logic [COLS-1:0]      btn,         // one button per column, asynchronous, active high
-  output logic [ROWS*COLS-1:0] red, yellow, // cell (c, r) at bit c*ROWS + r, r = 0 is the bottom row
-  output logic                 turn,        // 0: red to move, 1: yellow to move
-  output logic                 win_red, win_yellow, draw, game_over);
+```mermaid
+flowchart LR
+  btn["btn[COLS-1:0]<br/>asynchronous"] --> sync["synchronizer<br/>+ edge detector"]
+  sync --> legal{"exactly one press,<br/>column not full,<br/>game not over"}
+  legal -->|move| board["board<br/>per column: height<br/>+ color bits"]
+  legal -->|move| turn["turn<br/>toggle"]
+  board --> win["win detector<br/>every window of WIN cells"]
+  board --> draw["draw:<br/>all columns full"]
+  win --> over["game_over"]
+  draw --> over
+  over --> legal
+  turn --> board
 ```
 
-## Architecture
+## Results
 
-| Block | Implementation |
+| Check | Result |
 |---|---|
-| Button input | `SYNC`-stage synchronizer per button, then a rising-edge detector; a press is accepted only if **exactly one** button rose in that cycle |
-| Legality | `move[c] = one_press & press[c] & ~game_over & (height[c] != ROWS)` |
-| Board | per column, a `$clog2(ROWS+1)`-bit height and `ROWS` color bits; a cell is occupied when `row < height` |
-| Turn | toggles only on an accepted move, cleared by reset |
-| Win | `four()` checks every horizontal, vertical and diagonal window of `WIN` cells (69 windows for 6 × 7 / 4) |
-| Draw / game over | all columns full without a win; `game_over` blocks every move until reset |
+| **P1–P7 game invariants** (list below), Yosys + ABC PDR | **proved unbounded** on a 4 × 4 board with 3 in a row, in about 5 minutes. The RTL is parameterized, so this is the same code as the 6 × 7 game |
+| Four broken designs: turn never toggles, no lockout, simultaneous presses accepted, full columns ignored | each produces a counterexample (2–10 cycles deep) |
+| Full 6 × 7 board, bounded model check (yosys-smtbmc + Z3) | no violation within 10 cycles of reset |
+| Testbench: 15 directed games (13 kinds of win, a full-board draw, a near-win that must not count), 300 random games, robustness cases (Icarus and Verilator) | all pass, comparing all 42 cells and every flag after every press |
+| Synthesis, 6 × 7 (Yosys, generic gates) | 840 cells: 85 flip-flops, 746 two-input gates, 9 inverters |
 
-Because the board only ever gains tokens and freezes once the game is over, a win can never disappear. There are no
-derived clocks: every register is on `clk`.
-
-## Verification
-
-### Simulation: `make sim` (Icarus Verilog and Verilator)
-
-`tb/tb_connect4.sv` drives the DUT with button presses and compares, after every press, all 42 cells and the turn,
-win, draw and game-over outputs with an independent behavioral model.
-
-| Category | Tests |
-|---|---|
-| FUNC | 15 directed games, each machine-checked by `scripts/c4model.py` to end in a specific first win: vertical (rows 1–4, 2–5, 3–6), horizontal (bottom and upper rows), both diagonals, both colors. Also a 42-move draw, a near-win that must *not* count, and 300 random games played to the first win |
-| ROBUST | presses on full columns, play after a win, reset mid-game, 19 presses on one column, 100 random 60-press games, win persistence |
-| INFO | two buttons in the same cycle (ignored by design) |
-
-Every test can also be run alone (`+TEST=n`).
-
-### Formal: `make formal` (Yosys + ABC PDR + yosys-smtbmc/Z3)
-
-`formal/connect4_formal.sv` states seven invariants as immediate assertions over registered previous-cycle values:
+The invariants are:
 
 | | Property |
 |---|---|
-| P1 | #red = #yellow + turn: turns strictly alternate, and no token is lost or duplicated |
-| P2 | gravity: no token above an empty cell |
+| P1 | #red = #yellow + turn: turns alternate, and no token is lost or duplicated |
+| P2 | gravity: no token sits above an empty cell |
 | P3 | red and yellow never win at the same time |
-| P4 | once the game is over, the board and the turn never change until reset |
+| P4 | once the game is over, the board and turn are frozen until reset |
 | P5 | a win never disappears until reset |
 | P6 | a clock cycle changes at most one cell |
 | P7 | one reset cycle gives an empty board with red to move |
 
-**Results:**
-* **All seven are proven unbounded** with ABC's PDR on a 4 × 4 board with 3 in a row, in about 5 minutes. The RTL is
-  fully parameterized, so the same code is proven. `BIG=1` also attempts 4 × 5 with 4 in a row; that proof did not
-  finish within an hour on a laptop.
-* The full 6 × 7 board is checked by bounded model checking: no violation in 10 cycles from reset.
-* **Mutation check:** four deliberately broken copies of the RTL must each fail the proof, and they do. The mutants
-  never toggle the turn, have no game-over lockout, accept simultaneous presses, and ignore full columns.
+## Reproduce
 
-> Toolchain note: Yosys ≥ 0.30 elaborates `assert` into `$check` cells. Without `async2sync; chformal -lower` before
-> `write_smt2`, the SMT model silently contains *no* properties and every check "passes". The scripts count the
-> assertions in the generated model and stop if there are none.
-
-### Synthesis: `make synth`
-
-`yosys synth -flatten` followed by `abc -g gates` maps the default 6 × 7 configuration to a generic gate library.
-The result is written to `build/synth_stat.txt`:
-
-| | Cells |
-|---|---|
-| Flip-flops | 85: 42 color bits, 7 × 3 height bits, the turn, and 7 × 3 button synchronizer / edge-detector stages |
-| Two-input gates | 746 (AND/NAND/OR/NOR/ANDNOT/ORNOT/XOR/XNOR) |
-| Inverters | 9 |
-| **Total** | **840** |
-
-## Repository layout
-
-```
-rtl/connect4.sv              the design
-tb/tb_connect4.sv            self-checking testbench (+ tb_common.svh, directed_games.svh)
-formal/connect4_formal.sv    properties; pdr.sh (one PDR proof), run_formal.sh (campaign incl. mutants and BMC)
-scripts/c4model.py           Python reference model; searches the directed games
-Makefile                     lint / sim / formal / synth
-```
-
-## Running
+Every result comes from a pinned toolchain: Ubuntu 26.04 with Icarus Verilog 12.0, Verilator 5.032, Yosys 0.52 and
+Z3 4.13 (see [`scripts/install-tools.sh`](scripts/install-tools.sh)).
 
 ```bash
-make lint sim        # Verilator lint, Icarus and Verilator simulation
-make formal          # PDR proofs, mutation check, bounded model check
-make synth           # Yosys gate count
+docker build -t connect4-sv .
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work connect4-sv make ci     # lint, sims, proofs, synthesis
+docker run --rm -u "$(id -u):$(id -g)" -v "$PWD":/work connect4-sv make full   # + full-board bounded check
 ```
+
+`build/SUMMARY.md` collects every result. The targets are `lint`, `sim`, `formal`, `formal-quick` (without the
+full-board check), `synth`, and `games` (regenerate the directed games).
+* The *CI* workflow runs `make ci` on every push and uploads `build/`.
+* *Full verification* runs `make full` on demand or for a `v*` tag. A tag also publishes a release with all outputs.
+
+## Repository map
+
+```
+rtl/connect4.sv     the design
+tb/                 self-checking testbench, directed games, tb_common.svh
+formal/             invariants (connect4_formal.sv), pdr.sh, run_formal.sh (proof, mutants, BMC; expected outcomes)
+scripts/c4model.py  Python game model; searches the shortest game ending in each kind of win
+docs/               DESIGN.md (interface, architecture), VERIFICATION.md (every check, tool invocations)
+```
+
+Origin: this design began as a two-person schematic project in a university digital-design course, co-designed with
+a course project partner. This repository is an independent SystemVerilog re-implementation. Analysis of the first
+version (reset, turn-keeping and clocking bugs) motivated its focus on verification.
+
+MIT License, © 2026 Rohan Sachdeva.

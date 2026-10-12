@@ -1,12 +1,21 @@
-# Connect Four game controller - lint, simulation, formal verification and synthesis statistics.
-# Tools: Verilator >= 5, Icarus Verilog >= 12, Yosys >= 0.30 (with yosys-smtbmc, yosys-abc) and Z3.
-RTL   := rtl/connect4.sv
-TB    := tb/tb_connect4.sv
-BUILD := build
+# Connect Four game controller: lint, simulation, formal verification, synthesis.
+# Toolchain: Icarus Verilog, Verilator, Yosys + yosys-abc + yosys-smtbmc, Z3, Python 3
+# (exact versions in scripts/install-tools.sh).
 
-.PHONY: all lint sim sim-icarus sim-verilator formal synth games clean
+RTL := rtl/connect4.sv
+TB  := tb/tb_connect4.sv
+RUN := bash scripts/run_sim.sh
+
+.PHONY: all ci full summary lint sim sim-icarus sim-verilator formal formal-quick synth games clean
 
 all: lint sim
+
+# CI entry points (.github/workflows): `make ci` runs on every push, `make full` adds the full-board check
+ci: lint sim formal-quick synth summary
+full: lint sim formal synth summary
+
+summary:
+	@bash scripts/summary.sh > /dev/null && echo "wrote build/SUMMARY.md"
 
 lint:
 	verilator --lint-only -Wall --top-module connect4 $(RTL)
@@ -14,30 +23,25 @@ lint:
 sim: sim-icarus sim-verilator
 
 sim-icarus:
-	@mkdir -p $(BUILD)
-	iverilog -g2012 -I tb -o $(BUILD)/tb.vvp $(TB) $(RTL)
-	vvp -n $(BUILD)/tb.vvp | tee $(BUILD)/icarus.log
-	@grep -q "RESULT: PASS" $(BUILD)/icarus.log
+	$(RUN) icarus connect4 $(TB) "" $(RTL)
 
 sim-verilator:
-	@mkdir -p $(BUILD)
-	verilator --binary --timing -Wno-fatal -Itb --top-module tb_connect4 -Mdir $(BUILD)/verilator $(TB) $(RTL)
-	$(BUILD)/verilator/Vtb_connect4 | tee $(BUILD)/verilator.log
-	@grep -q "RESULT: PASS" $(BUILD)/verilator.log
+	$(RUN) verilator connect4 $(TB) "" $(RTL)
 
-# unbounded PDR proofs on a 4x4 board, mutation check, BMC of the full board (BIG=1 adds a 4x5 connect-4 proof)
+# PDR proof on a 4 x 4 board, mutation check, BMC of the full board (BIG=1 also tries a 4 x 5 proof)
 formal:
 	bash formal/run_formal.sh
 
-# gate-level statistics of the default 6x7 configuration
+# the same without the full-board BMC (about 6 minutes)
+formal-quick:
+	QUICK=1 bash formal/run_formal.sh
+
 synth:
-	@mkdir -p $(BUILD)
-	yosys -q -p "read_verilog -sv $(RTL); synth -top connect4 -flatten; abc -g gates; \
-	  opt_clean; tee -o $(BUILD)/synth_stat.txt stat" && cat $(BUILD)/synth_stat.txt
+	bash scripts/synth.sh
 
 # regenerate the directed games of the testbench (shortest random games that end in each kind of win)
 games:
 	python3 scripts/c4model.py tb/directed_games.svh
 
 clean:
-	rm -rf $(BUILD)
+	rm -rf build obj_dir
