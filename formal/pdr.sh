@@ -2,7 +2,7 @@
 # pdr.sh - unbounded safety proof of every assertion in connect4_formal.sv with ABC's PDR (IC3), the engine
 # SymbiYosys calls "abc pdr".
 #   R, C, W  board rows / columns / win length (default 6 x 7, 4 in a row)
-#   RTL      implementation to prove (default ../rtl/connect4.sv; mutate.sh passes broken copies)
+#   RTL      implementation to prove (default ../rtl/connect4.sv; run_formal.sh passes mutated copies)
 #   TO       time limit in seconds
 cd "$(dirname "$0")"
 OUTD=../build/formal; mkdir -p $OUTD
