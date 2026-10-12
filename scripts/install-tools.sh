@@ -12,7 +12,7 @@ apt-get install -y --no-install-recommends \
   z3=4.13.3-1build1 \
   make g++ python3 git ca-certificates
 echo "== toolchain"
-iverilog -V 2>&1 | head -1
+iverilog -V 2>&1 | sed -n 1p
 verilator --version
 yosys -V
 z3 --version
